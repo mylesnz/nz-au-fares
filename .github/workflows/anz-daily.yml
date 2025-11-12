@@ -1,0 +1,32 @@
+name: NZ AU Fares Daily
+
+on:
+  schedule:
+    # 18:00 UTC daily (07:00 NZST approx, 06:00 NZDT approx – adjust if you care)
+    - cron: "0 18 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  nz-au-fares:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+      FROM_NAME: "NZ AU Fares Bot"
+      TO_EMAIL: ${{ secrets.TO_EMAIL }}
+      BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+      DRY_RUN: "0"
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run NZ→AU fare watcher
+        run: |
+          python3 scripts/anz_grabaseat_daily.py

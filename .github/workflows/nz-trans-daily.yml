@@ -1,0 +1,37 @@
+name: NZ Trans-Tasman Daily
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # 06:55 NZT ≈ 17:55 UTC (adjust as needed)
+    - cron: "55 17 * * *"
+
+jobs:
+  trans-tas:
+    runs-on: ubuntu-24.04
+    env:
+      MONTHS_AHEAD: "6"
+      PREM_MAX_NZD: "1300"
+      BUS_MAX_NZD: "1500"
+      ROUTES: "AKL:SYD,AKL:MEL"
+      RATE_LIMIT_MS: "250"
+      DRY_RUN: "0"
+      DEBUG: "0"
+      WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+      TEQUILA_API_KEY: ${{ secrets.TEQUILA_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run Trans-Tasman watch
+        run: |
+          python nz_trans_tasman_price_watch.py
+      - name: Upload HTML artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nz-trans-html
+          path: out-nz-trans.html

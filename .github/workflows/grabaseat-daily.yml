@@ -1,0 +1,39 @@
+name: Grabaseat Daily
+
+on:
+  schedule:
+    - cron: "15 19 * * *"   # 07:15 NZT (approx; adjust for DST)
+  workflow_dispatch: {}
+
+jobs:
+  nz-trans-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+      FROM_NAME:  ${{ secrets.FROM_NAME }}
+      TO_EMAIL:   ${{ secrets.TO_EMAIL }}
+      BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+      DEBUG: "0"
+      DRY_RUN: "0"          # set to "1" while testing in Actions
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Grabaseat scan
+        run: |
+          echo "🚀 Running Grabaseat daily scan..."
+          python grabaseat_daily.py
+
+      - name: Upload HTML artifact (for debugging)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: out.html
+          path: out.html
