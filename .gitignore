@@ -4,3 +4,7 @@
 *.key
 *.secret
 *.json.secret
+.env*
+*.key
+*.secret
+*.json.secret
