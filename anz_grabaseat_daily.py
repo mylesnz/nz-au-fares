@@ -1,256 +1,450 @@
 #!/usr/bin/env python3
 """
-NZ→AU Air New Zealand fare watcher (dummy version).
+NZ→AU Air NZ watcher using Amadeus Flight Offers (test API).
 
-- Reads simple config from environment variables
-- Generates synthetic NZ→AU round-trip fares (AKL–SYD / AKL–MEL)
-- Filters by cabin + price thresholds
-- Builds an HTML email body
-- Writes it to out_nz_au.html in the current working directory
-- Prints a preview to stdout
+- Searches AKL→SYD and AKL→MEL returns, 8–12 days, over N months.
+- Keeps only:
+    * Airline: NZ (Air New Zealand) via Amadeus filter
+    * Cabin: PREMIUM_ECONOMY or BUSINESS
+    * Price caps: PE_CAP / J_CAP (NZD)
+- Writes HTML to out_nz_au.html
+- Optional email via Brevo SMTP API (if DRY_RUN=0 and BREVO_API_KEY is set).
+
+Environment variables:
+  AMADEUS_CLIENT_ID       (required)
+  AMADEUS_CLIENT_SECRET   (required)
+
+  BREVO_API_KEY           (for email)
+  FROM_EMAIL              (Brevo-verified sender)
+  FROM_NAME               (e.g. "NZ AU Fare Bot")
+  TO_EMAIL                (recipient)
+
+  SCAN_MONTHS             (default 3)
+  FLEX_DAYS               (default 2)
+  MIN_RET_DAYS            (default 8)
+  MAX_RET_DAYS            (default 12)
+  DATE_STEP_DAYS          (default 10)
+  PE_CAP                  (default 1300)
+  J_CAP                   (default 1500)
+  DRY_RUN                 ("1" = no email, "0" = send email)
+  DEBUG                   ("1" = verbose logs)
 """
 
 import os
+import sys
+import json
+import time
 import datetime as dt
-from typing import List, Dict, Any
-import html
+from decimal import Decimal, InvalidOperation
+from typing import Any, Dict, List, Optional, Tuple
 
+import requests
 
-# ----------------------------
-# Helpers / configuration
-# ----------------------------
+# ---------- Helpers for env / logging ----------
 
 def getenv_int(name: str, default: int) -> int:
+    val = os.getenv(name)
+    if val is None:
+        return default
     try:
-        return int(os.getenv(name, str(default)))
+        return int(val)
     except ValueError:
         return default
 
 
-def today_nz() -> dt.date:
-    # Close enough for this watcher; you don't need timezone math here
-    return dt.date.today()
+def getenv_bool(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "y", "on")
 
+
+DEBUG = getenv_bool("DEBUG", False)
+
+
+def dlog(msg: str) -> None:
+    if DEBUG:
+        print(msg)
+
+
+# ---------- Config ----------
+
+ROUTES: List[Tuple[str, str]] = [
+    ("AKL", "SYD"),
+    ("AKL", "MEL"),
+]
+
+CITY_BY_IATA: Dict[str, str] = {
+    "AKL": "Auckland",
+    "SYD": "Sydney",
+    "MEL": "Melbourne",
+}
+
+SCAN_MONTHS = getenv_int("SCAN_MONTHS", 3)
+FLEX_DAYS = getenv_int("FLEX_DAYS", 2)
+MIN_RET_DAYS = getenv_int("MIN_RET_DAYS", 8)
+MAX_RET_DAYS = getenv_int("MAX_RET_DAYS", 12)
+DATE_STEP_DAYS = getenv_int("DATE_STEP_DAYS", 10)
+
+PE_CAP = Decimal(str(getenv_int("PE_CAP", 1300)))
+J_CAP = Decimal(str(getenv_int("J_CAP", 1500)))
+
+DRY_RUN = getenv_bool("DRY_RUN", True)
+
+# ---------- Amadeus auth + call ----------
+
+AMADEUS_CLIENT_ID = os.getenv("AMADEUS_CLIENT_ID")
+AMADEUS_CLIENT_SECRET = os.getenv("AMADEUS_CLIENT_SECRET")
+
+AMADEUS_TOKEN_URL = "https://test.api.amadeus.com/v1/security/oauth2/token"
+AMADEUS_FLIGHT_OFFERS_URL = "https://test.api.amadeus.com/v2/shopping/flight-offers"
+
+
+def get_amadeus_token() -> Optional[str]:
+    if not AMADEUS_CLIENT_ID or not AMADEUS_CLIENT_SECRET:
+        print("❌ Missing AMADEUS_CLIENT_ID / AMADEUS_CLIENT_SECRET", file=sys.stderr)
+        return None
+
+    dlog("[DEBUG] Requesting Amadeus token…")
+    try:
+        resp = requests.post(
+            AMADEUS_TOKEN_URL,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": AMADEUS_CLIENT_ID,
+                "client_secret": AMADEUS_CLIENT_SECRET,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        print(f"❌ Amadeus auth failed: {e}", file=sys.stderr)
+        return None
+
+    try:
+        token = resp.json().get("access_token")
+    except Exception:
+        print("❌ Amadeus auth: invalid JSON response", file=sys.stderr)
+        return None
+
+    if not token:
+        print("❌ Amadeus auth: no access_token in response", file=sys.stderr)
+        return None
+
+    return token
+
+
+def amadeus_search(
+    token: str,
+    origin: str,
+    dest: str,
+    dep_date: str,
+    ret_date: str,
+) -> Optional[Dict[str, Any]]:
+    params = {
+        "originLocationCode": origin,
+        "destinationLocationCode": dest,
+        "departureDate": dep_date,
+        "returnDate": ret_date,
+        "adults": 1,
+        "currencyCode": "NZD",
+        "max": 50,
+        # Restrict to Air New Zealand only
+        "includedAirlineCodes": "NZ",
+    }
+    headers = {"Authorization": f"Bearer {token}"}
+
+    dlog(f"[DEBUG] Amadeus GET {AMADEUS_FLIGHT_OFFERS_URL} {params}")
+
+    try:
+        resp = requests.get(
+            AMADEUS_FLIGHT_OFFERS_URL,
+            headers=headers,
+            params=params,
+            timeout=25,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except requests.HTTPError as e:
+        print(f"[WARN] Amadeus HTTP {resp.status_code} for {origin}->{dest} {dep_date}/{ret_date}: {e}", file=sys.stderr)
+    except requests.RequestException as e:
+        print(f"[WARN] Amadeus request error for {origin}->{dest} {dep_date}/{ret_date}: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"[WARN] Amadeus unexpected error for {origin}->{dest} {dep_date}/{ret_date}: {e}", file=sys.stderr)
+
+    return None
+
+
+# ---------- Parsing / cabin / filters ----------
+
+def extract_cabin(offer: Dict[str, Any]) -> str:
+    """
+    Try hard to pull the main cabin:
+      - travelerPricings[].fareDetailsBySegment[].cabin
+      - itineraries[].segments[].cabin (fallback)
+    Returns upper-case cabin string or "UNKNOWN".
+    """
+    # 1) travelerPricings path
+    tps = offer.get("travelerPricings") or []
+    for tp in tps:
+        for fd in tp.get("fareDetailsBySegment") or []:
+            cab = fd.get("cabin")
+            if cab:
+                return str(cab).upper()
+
+    # 2) itineraries/segments path
+    itins = offer.get("itineraries") or []
+    for itin in itins:
+        for seg in itin.get("segments") or []:
+            cab = seg.get("cabin") or seg.get("cabinClass")
+            if cab:
+                return str(cab).upper()
+
+    return "UNKNOWN"
+
+
+def extract_price_nzd(offer: Dict[str, Any]) -> Optional[Decimal]:
+    try:
+        price = offer.get("price") or {}
+        if price.get("currency") != "NZD":
+            # Different currency – you could convert, but for now just skip
+            return None
+        return Decimal(price.get("grandTotal"))
+    except (InvalidOperation, TypeError):
+        return None
+
+
+def extract_carrier(offer: Dict[str, Any]) -> str:
+    # Air NZ only, but still helpful to see code in logs
+    itins = offer.get("itineraries") or []
+    if itins:
+        segs = itins[0].get("segments") or []
+        if segs:
+            return segs[0].get("carrierCode", "NZ")
+    return "NZ"
+
+
+def build_grabaseat_link(origin: str, dest: str) -> str:
+    # Placeholder; real deep links are gross.
+    return "https://www.grabaseat.co.nz/"
+
+
+def city_label(code: str) -> str:
+    name = CITY_BY_IATA.get(code, "")
+    return f"{code} ({name})" if name else code
+
+
+def collect_rows_for_pair(
+    token: str,
+    origin: str,
+    dest: str,
+    start_date: dt.date,
+    end_date: dt.date,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+
+    cur = start_date
+    while cur <= end_date:
+        for ret_gap in range(MIN_RET_DAYS, MAX_RET_DAYS + 1):
+            dep = cur
+            ret = cur + dt.timedelta(days=ret_gap)
+
+            dep_str = dep.isoformat()
+            ret_str = ret.isoformat()
+
+            data = amadeus_search(token, origin, dest, dep_str, ret_str)
+            if not data:
+                continue
+
+            offers = data.get("data") or []
+            dlog(f"[DEBUG] {origin}->{dest} {dep_str}/{ret_str}: {len(offers)} offers")
+
+            for off in offers:
+                cabin = extract_cabin(off)
+                price = extract_price_nzd(off)
+                carrier = extract_carrier(off)
+
+                if cabin not in ("PREMIUM_ECONOMY", "BUSINESS"):
+                    dlog(f"[DEBUG] Reject (not PE/J): {origin}->{dest} {cabin} {price or 'N/A'} {carrier}")
+                    continue
+
+                if price is None:
+                    dlog(f"[DEBUG] Reject (no NZD price): {origin}->{dest} {cabin}")
+                    continue
+
+                if cabin == "PREMIUM_ECONOMY" and price > PE_CAP:
+                    dlog(f"[DEBUG] Reject (PE above cap): {origin}->{dest} {cabin} {price}")
+                    continue
+                if cabin == "BUSINESS" and price > J_CAP:
+                    dlog(f"[DEBUG] Reject (J above cap): {origin}->{dest} {cabin} {price}")
+                    continue
+
+                rows.append(
+                    {
+                        "origin": origin,
+                        "dest": dest,
+                        "dep": dep,
+                        "ret": ret,
+                        "cabin": cabin,
+                        "price": price,
+                        "carrier": carrier,
+                        "link": build_grabaseat_link(origin, dest),
+                    }
+                )
+
+            # Be nice to Amadeus test API
+            time.sleep(0.4)
+
+        cur += dt.timedelta(days=DATE_STEP_DAYS)
+
+    return rows
+
+
+# ---------- HTML & email ----------
 
 def nz_date(d: dt.date) -> str:
     return d.strftime("%d/%m/%y")
 
 
-CITY_NAMES = {
-    "AKL": "Auckland",
-    "SYD": "Sydney",
-    "MEL": "Melbourne",
-    "CHC": "Christchurch",
-    "WLG": "Wellington",
-}
-
-def route_label(orig: str, dest: str) -> str:
-    o_name = CITY_NAMES.get(orig, orig)
-    d_name = CITY_NAMES.get(dest, dest)
-    return f"{orig} ({o_name}) → {dest} ({d_name})"
+def format_money(n: Decimal) -> str:
+    # thousands, 2dp
+    return f"${n:,.2f}"
 
 
-# ----------------------------
-# Dummy data fetcher
-# ----------------------------
-
-def fetch_dummy_fares(start: dt.date, end: dt.date) -> List[Dict[str, Any]]:
-    """
-    Stand-in for a real Air NZ / Grabaseat scraper.
-
-    Returns a few synthetic rows so you can:
-    - exercise HTML rendering
-    - test GitHub Actions
-    - validate thresholds & formatting
-    """
-    out1 = start + dt.timedelta(days=14)
-    ret1 = out1 + dt.timedelta(days=7)
-
-    out2 = start + dt.timedelta(days=30)
-    ret2 = out2 + dt.timedelta(days=10)
-
-    out3 = start + dt.timedelta(days=45)
-    ret3 = out3 + dt.timedelta(days=5)
-
-    return [
-        {
-            "origin": "AKL",
-            "dest": "SYD",
-            "depart_date": out1,
-            "return_date": ret1,
-            "cabin": "Premium Economy",
-            "price_nzd": 899,
-            "carrier": "NZ",
-            "link": "https://www.grabaseat.co.nz/",  # dummy
-        },
-        {
-            "origin": "AKL",
-            "dest": "MEL",
-            "depart_date": out2,
-            "return_date": ret2,
-            "cabin": "Business",
-            "price_nzd": 1899,
-            "carrier": "NZ",
-            "link": "https://www.grabaseat.co.nz/",
-        },
-        {
-            "origin": "AKL",
-            "dest": "SYD",
-            "depart_date": out3,
-            "return_date": ret3,
-            "cabin": "Business",
-            "price_nzd": 1399,
-            "carrier": "NZ",
-            "link": "https://www.grabaseat.co.nz/",
-        },
-    ]
-
-
-# ----------------------------
-# HTML rendering
-# ----------------------------
-
-def build_html(
-    rows: List[Dict[str, Any]],
-    start: dt.date,
-    end: dt.date,
-    pe_cap: int,
-    j_cap: int,
-) -> str:
-    today = today_nz()
-
-    parts: List[str] = []
-    parts.append(
-        f"<h1 style=\"font-family:Arial,Helvetica,sans-serif;\">"
-        f"NZ→AU Air NZ fares – {nz_date(today)}</h1>"
-    )
-    parts.append(
-        "<p>"
-        f"Window: {nz_date(start)} → {nz_date(end)}&nbsp; |&nbsp;"
-        f"Thresholds: Prem Econ ≤ ${pe_cap}, Business ≤ ${j_cap}"
-        "</p>"
-    )
+def render_html(rows: List[Dict[str, Any]], today: dt.date) -> str:
+    title = f"NZ→AU Air NZ fares – {nz_date(today)}"
 
     if not rows:
-        parts.append("<p>No fares under the configured thresholds were found.</p>")
-        return "\n".join(parts)
+        return (
+            f"<h1 style=\"font-family:Arial,Helvetica,sans-serif;\">{title}</h1>"
+            "<p>No qualifying Premium Economy / Business fares found in the configured window.</p>"
+        )
+
+    rows_sorted = sorted(rows, key=lambda r: (r["dep"], r["origin"], r["dest"], r["price"]))
+
+    parts: List[str] = []
+    parts.append(f"<h1 style=\"font-family:Arial,Helvetica,sans-serif;\">{title}</h1>")
+    if rows:
+        window_end = max(r["ret"] for r in rows)
+    else:
+        window_end = today
+    parts.append(
+        f"<p>Window: {nz_date(today)} → {nz_date(window_end)}&nbsp; |&nbsp;"
+        f"Thresholds: Prem Econ ≤ {format_money(PE_CAP)}, Business ≤ {format_money(J_CAP)}</p>"
+    )
 
     parts.append(
         "<table style=\"border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; "
         "font-size:13px; width:100%;\">"
-    )
-    parts.append(
-        "  <thead>"
-        "    <tr style=\"background-color:#eeeeee;\">"
-        "      <th style=\"text-align:left; padding:6px 8px;\">Route</th>"
-        "      <th style=\"text-align:left; padding:6px 8px;\">Dates</th>"
-        "      <th style=\"text-align:left; padding:6px 8px;\">Cabin</th>"
-        "      <th style=\"text-align:left; padding:6px 8px;\">Price (NZD)</th>"
-        "      <th style=\"text-align:left; padding:6px 8px;\">Carrier</th>"
-        "      <th style=\"text-align:left; padding:6px 8px;\">Link</th>"
-        "    </tr>"
-        "  </thead>"
-        "  <tbody>"
+        "<thead>"
+        "<tr style=\"background-color:#eeeeee;\">"
+        "<th style=\"text-align:left; padding:6px 8px;\">Route</th>"
+        "<th style=\"text-align:left; padding:6px 8px;\">Dates</th>"
+        "<th style=\"text-align:left; padding:6px 8px;\">Cabin</th>"
+        "<th style=\"text-align:left; padding:6px 8px;\">Price (NZD)</th>"
+        "<th style=\"text-align:left; padding:6px 8px;\">Carrier</th>"
+        "<th style=\"text-align:left; padding:6px 8px;\">Link</th>"
+        "</tr>"
+        "</thead><tbody>"
     )
 
-    for r in rows:
-        origin = r["origin"]
-        dest = r["dest"]
-        dep = r["depart_date"]
-        ret = r["return_date"]
-        cabin = r["cabin"]
-        price = r["price_nzd"]
-        carrier = r.get("carrier", "NZ")
-        link = r.get("link", "#")
+    for r in rows_sorted:
+        dep = nz_date(r["dep"])
+        ret = nz_date(r["ret"])
+        route = f"{city_label(r['origin'])} → {city_label(r['dest'])}"
+        cabin_label = "Premium Economy" if r["cabin"] == "PREMIUM_ECONOMY" else "Business"
+        price_html = f"<span style='color:#2e7d32; font-weight:bold;'>{format_money(r['price'])}</span>"
+        carrier = r["carrier"]
+        link = r["link"]
 
-        route_str = route_label(origin, dest)
-        dates_str = f"{nz_date(dep)} → {nz_date(ret)}"
-
-        # Colour by threshold
-        if cabin.lower().startswith("prem"):
-            under_cap = price <= pe_cap
-        elif cabin.lower().startswith("bus"):
-            under_cap = price <= j_cap
-        else:
-            under_cap = False
-
-        colour = "#2e7d32" if under_cap else "#000000"
-        price_html = f"<span style='color:{colour}; font-weight:bold;'>${price:,.0f}</span>"
-
-        row_html = (
-            "    <tr>"
-            f"<td style='padding:4px 8px;'>{html.escape(route_str)}</td>"
-            f"<td style='padding:4px 8px;'>{html.escape(dates_str)}</td>"
-            f"<td style='padding:4px 8px;'>{html.escape(cabin)}</td>"
+        parts.append(
+            "<tr>"
+            f"<td style='padding:4px 8px;'>{route}</td>"
+            f"<td style='padding:4px 8px;'>{dep} → {ret}</td>"
+            f"<td style='padding:4px 8px;'>{cabin_label}</td>"
             f"<td style='padding:4px 8px;'>{price_html}</td>"
-            f"<td style='padding:4px 8px;'>{html.escape(carrier)}</td>"
-            f"<td style='padding:4px 8px;'><a href='{html.escape(link)}'>Search</a></td>"
+            f"<td style='padding:4px 8px;'>{carrier}</td>"
+            f"<td style='padding:4px 8px;'><a href='{link}'>Search</a></td>"
             "</tr>"
         )
-        parts.append(row_html)
 
-    parts.append("  </tbody>")
-    parts.append("</table>")
-
-    return "\n".join(parts)
+    parts.append("</tbody></table>")
+    return "".join(parts)
 
 
-# ----------------------------
-# Main
-# ----------------------------
+def send_brevo_email(subject: str, html: str) -> bool:
+    api_key = os.getenv("BREVO_API_KEY")
+    from_email = os.getenv("FROM_EMAIL")
+    to_email = os.getenv("TO_EMAIL")
+    from_name = os.getenv("FROM_NAME", "NZ AU Fare Bot")
+
+    if not api_key or not from_email or not to_email:
+        print("❌ Missing Brevo config (BREVO_API_KEY / FROM_EMAIL / TO_EMAIL); skipping email.", file=sys.stderr)
+        return False
+
+    payload = {
+        "sender": {"email": from_email, "name": from_name},
+        "to": [{"email": to_email}],
+        "subject": subject,
+        "htmlContent": html,
+    }
+
+    try:
+        resp = requests.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "api-key": api_key,
+            },
+            data=json.dumps(payload),
+            timeout=20,
+        )
+        if 200 <= resp.status_code < 300:
+            print(f"✅ Brevo email sent: {resp.status_code}")
+            return True
+        print(f"❌ Brevo email failed: {resp.status_code} {resp.text}", file=sys.stderr)
+    except requests.RequestException as e:
+        print(f"❌ Brevo request error: {e}", file=sys.stderr)
+    return False
+
+
+# ---------- main ----------
 
 def main() -> None:
-    # Config from env with sane defaults
-    scan_months = getenv_int("SCAN_MONTHS", 6)
-    pe_cap = getenv_int("PE_CAP", 1300)
-    j_cap = getenv_int("J_CAP", 1500)
+    today = dt.date.today()
+    print("🚀 NZ→AU Air NZ fare watcher (Amadeus test API)")
 
-    dry_run = os.getenv("DRY_RUN", "1") == "1"
-    debug = os.getenv("DEBUG", "0") == "1"
+    token = get_amadeus_token()
+    if not token:
+        return
 
-    today = today_nz()
-    start = today
-    end = today + dt.timedelta(days=scan_months * 30)
+    window_end = today + dt.timedelta(days=SCAN_MONTHS * 30)
+    all_rows: List[Dict[str, Any]] = []
 
-    if debug:
-        print("🚀 NZ→AU Air NZ fare watcher (dummy data)")
+    for (orig, dest) in ROUTES:
+        dlog(f"[DEBUG] Scanning route {orig}->{dest} from {today} to {window_end}")
+        rows = collect_rows_for_pair(token, orig, dest, today, window_end)
+        all_rows.extend(rows)
 
-    # Fetch synthetic rows
-    rows = fetch_dummy_fares(start, end)
-    if debug:
-        print(
-            f"Fetched {len(rows)} synthetic rows between "
-            f"{start.isoformat()} and {end.isoformat()}"
-        )
+    print(f"Found {len(all_rows)} qualifying rows after cabin + price caps.")
 
-    # Apply thresholds
-    filtered: List[Dict[str, Any]] = []
-    for r in rows:
-        cabin = r["cabin"]
-        price = r["price_nzd"]
-        if cabin.lower().startswith("prem") and price <= pe_cap:
-            filtered.append(r)
-        elif cabin.lower().startswith("bus") and price <= j_cap:
-            filtered.append(r)
+    html_body = render_html(all_rows, today)
 
-    if debug:
-        print(f"After thresholds: {len(filtered)} rows")
-
-    html_body = build_html(filtered, start, end, pe_cap, j_cap)
-
-    # Always write the HTML file to the current working directory
     out_path = os.path.join(os.getcwd(), "out_nz_au.html")
-    try:
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write(html_body)
-        print(f"Wrote {out_path}")
-    except Exception as e:
-        print(f"❌ Failed to write {out_path}: {e}")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(html_body)
+    print(f"Wrote {out_path}")
 
-    # And echo a preview
-    print("DRY_RUN=1 → not sending email. HTML preview:\n")
-    print(f"NZ→AU Air NZ fares – {nz_date(today)}\n")
-    print(html_body)
+    subject = f"NZ→AU Air NZ fares – {nz_date(today)}"
+
+    if DRY_RUN:
+        print("DRY_RUN=1 → not sending email. HTML preview:\n")
+        print(subject)
+        print()
+        print(html_body[:1200])
+    else:
+        send_brevo_email(subject, html_body)
 
 
 if __name__ == "__main__":

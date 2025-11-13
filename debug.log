@@ -1,0 +1,28 @@
+🚀 NZ→AU Air NZ fare watcher (dummy data)
+Fetched 3 synthetic rows between 2025-11-13 and 2026-05-15
+After thresholds: 1 rows
+DRY_RUN=1 → not sending email. HTML preview:
+
+NZ→AU Air NZ fares – 13/11/25
+
+
+<h1 style="font-family:Arial,Helvetica,sans-serif;">NZ→AU Air NZ fares – 13/11/25</h1>
+<p>Window: 13/11/25 → 15/05/26&nbsp; |&nbsp;
+Thresholds: Prem Econ ≤ $1300, Business ≤ $1500</p>
+
+<table style="border-collapse:collapse; font-family:Arial,Helvetica,sans-serif; font-size:13px; width:100%;">
+  <thead>
+    <tr style="background-color:#eeeeee;">
+      <th style="text-align:left; padding:6px 8px;">Route</th>
+      <th style="text-align:left; padding:6px 8px;">Dates</th>
+      <th style="text-align:left; padding:6px 8px;">Cabin</th>
+      <th style="text-align:left; padding:6px 8px;">Price (NZD)</th>
+      <th style="text-align:left; padding:6px 8px;">Carrier</th>
+      <th style="text-align:left; padding:6px 8px;">Link</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td style='padding:4px 8px;'>AKL (Auckland) → SYD (Sydney)</td><td style='padding:4px 8px;'>27/11/25 → 04/12/25</td><td style='padding:4px 8px;'>Premium Economy</td><td style='padding:4px 8px;'><span style='color:#2e7d32; font-weight:bold;'>$899</span></td><td style='padding:4px 8px;'>NZ</td><td style='padding:4px 8px;'><a href='#'>Search</a></td></tr>
+  </tbody>
+</table>
+

@@ -1,0 +1,41 @@
+name: "NZ→AU Air NZ watcher"
+
+on:
+  schedule:
+    # 18:00 UTC daily ≈ 07:00 NZDT (adjust if you want)
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+jobs:
+  anz-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run NZ→AU watcher
+        env:
+          # Email routing – configure these as GitHub Actions Secrets
+          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+          FROM_NAME:  "NZ→AU Fares Bot"
+          TO_EMAIL:   ${{ secrets.TO_EMAIL }}
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+
+          # Behaviour (override if you want via repo/Org envs)
+          SCAN_MONTHS: "6"
+          FLEX_DAYS:   "3"
+          MIN_RET_DAYS: "8"
+          MAX_RET_DAYS: "12"
+          PE_CAP:      "1300"
+          J_CAP:       "1500"
+
+          DRY_RUN: "0"   # in Actions we actually want the email
+          DEBUG:   "0"   # set to "1" if you want verbose logs in Actions
+        run: |
+          python3 anz_grabaseat_daily.py
