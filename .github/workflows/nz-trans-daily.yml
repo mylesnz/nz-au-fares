@@ -1,37 +1,35 @@
-name: NZ Trans-Tasman Daily
+name: NZ Trans Tasman Daily
 
 on:
-  workflow_dispatch: {}
   schedule:
-    # 06:55 NZT ≈ 17:55 UTC (adjust as needed)
-    - cron: "55 17 * * *"
+    - cron: "0 18 * * *"
+  workflow_dispatch: {}
 
 jobs:
-  trans-tas:
-    runs-on: ubuntu-24.04
+  nz-trans-tasman-daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
-      MONTHS_AHEAD: "6"
-      PREM_MAX_NZD: "1300"
-      BUS_MAX_NZD: "1500"
-      ROUTES: "AKL:SYD,AKL:MEL"
-      RATE_LIMIT_MS: "250"
+      BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+      FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+      TO_EMAIL: ${{ secrets.TO_EMAIL }}
+      FROM_NAME: "NZ AU Travel Bot"
       DRY_RUN: "0"
-      DEBUG: "0"
-      WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
-      TEQUILA_API_KEY: ${{ secrets.TEQUILA_API_KEY }}
+      DEBUG: "1"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Setup Python
+
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Run Trans-Tasman watch
+          python-version: "3.11"
+
+      - name: Install dependencies
         run: |
-          python nz_trans_tasman_price_watch.py
-      - name: Upload HTML artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: nz-trans-html
-          path: out-nz-trans.html
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Run NZ Trans Tasman daily
+        run: python nz_trans_tasman_price_watch.py

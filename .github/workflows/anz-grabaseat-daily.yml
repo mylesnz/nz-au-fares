@@ -1,34 +1,30 @@
-name: Run NZ → AU daily fares
+name: Run ANZ Grabaseat Daily
 
 on:
   schedule:
-    # GitHub cron uses UTC.
-    # 7am NZT ≈ 18:00 UTC the previous day (during daylight saving).
     - cron: "0 18 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 jobs:
   run-daily:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
+          python-version: "3.x"
 
-      # No `pip install` step needed – script uses only standard library.
+      - name: Install deps
+        run: pip install --upgrade pip
 
-      - name: Run NZ → AU daily fares script
+      - name: Run script
         env:
           BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
-          FROM_EMAIL: "alert@imoffto.xyz"
-          TO_EMAIL: "milo@imoffto.xyz"
-          FROM_NAME: "NZ-AU Fares Bot"
-          DRY_RUN: "0"
-          DEBUG: "1"
-        run: |
-          python3 anz_grabaseat_daily.py
+          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+          TO_EMAIL: ${{ secrets.TO_EMAIL }}
+          FROM_NAME: "NZ-AU Fare Bot"
+          DEBUG: "0"
+        run: python3 anz_grabaseat_daily.py
