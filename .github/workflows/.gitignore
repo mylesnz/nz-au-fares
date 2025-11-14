@@ -1,2 +1,34 @@
 .env.local
 .env*
+# --- Secret / Local Config ---
+.env
+.env.*
+.env.local
+*.key
+*.pem
+secrets.json
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- Local Outputs ---
+*.html
+*.log
+debug.log
+out_*.html
+anz_out.html
+nz_out.html
+
+# --- macOS ---
+.DS_Store
+
+# --- GitHub Actions temp ---
+*.retry
