@@ -1,0 +1,32 @@
+name: NZ Trans Tasman Daily
+
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+jobs:
+  run-daily:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run NZ Trans Tasman watcher
+        run: python nz_trans_tasman_price_watch.py
+        env:
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          FROM_EMAIL: "alert@imoffto.xyz"
+          TO_EMAIL: "milo@imoffto.xyz"
+          FROM_NAME: "NZ → AU Fare Bot"
+          DRY_RUN: "0"
+          DEBUG: "1"
