@@ -4,7 +4,7 @@ import urllib.request, urllib.error, json, ssl, time, datetime, os, traceback
 BREVO_API_KEY = os.getenv("BREVO_API_KEY")
 RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL", "unknown@example.com")
 PE_PRICE_CAP = int(os.getenv("PE_PRICE_CAP", "650"))
-CABIN_CLASS = os.getenv("CABIN_CLASS", "premiumeconomy")
+CABIN_CLASS = "premium-economy"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "info").lower()
 DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
 
@@ -58,8 +58,9 @@ def fetch():
     return fares
 
 def html(f):
+    date = datetime.date.today().strftime("%d/%m/%y")
     if not f:
-        return "<p>No fares returned</p>"
+        return f"<h3>No Premium Economy fares found – {date}</h3>"
 
     rows = ""
     for x in f:
@@ -70,8 +71,7 @@ def html(f):
                  " style='color:orange'")
             rows += f"<tr{c}><td>{x['origin']}</td><td>{x['destination']}</td><td>{x['price']} {x['currency']}</td></tr>"
 
-    return (f"<h3>NZ→AU Premium Economy</h3>"
-            f"<p>{datetime.date.today()}</p>"
+    return (f"<h3>NZ→AU Premium Economy – {date}</h3>"
             "<table border='1'><tr><th>From</th><th>To</th><th>Price</th></tr>"
             f"{rows}</table>")
 
@@ -84,9 +84,8 @@ def send(subject, body):
         log("Missing BREVO_API_KEY", "error")
         return False
 
-    sender_email = RECIPIENT_EMAIL
     payload = json.dumps({
-        "sender": {"name": "PE Bot", "email": sender_email},
+        "sender": {"name": "PE Bot", "email": RECIPIENT_EMAIL},
         "to": [{"email": RECIPIENT_EMAIL}],
         "subject": subject,
         "htmlContent": body,
@@ -106,9 +105,9 @@ def send(subject, body):
 
     try:
         with urllib.request.urlopen(req, context=ssl_ctx) as r:
-            resp_body = r.read().decode("utf-8")
+            resp = r.read().decode("utf-8")
             log(f"Email status={r.status}", "info")
-            log(f"Email response={resp_body}", "info")
+            log(f"Email response={resp}", "info")
             return 200 <= r.status < 300
     except urllib.error.HTTPError as e:
         log(f"Email HTTPError {e.code}: {e.read().decode('utf-8')}", "error")
@@ -120,11 +119,12 @@ def send(subject, body):
 if __name__ == "__main__":
     log("Start")
     try:
-        f = fetch()
-        s = f"Premium Deals {datetime.date.today()}"
-        ok = send(s, html(f))
+        fares = fetch()
+        date = datetime.date.today().strftime("%d/%m/%y")
+        subject = f"NZ→AU Premium Economy Status – {date}"
+        ok = send(subject, html(fares))
         log("Sent" if ok else "FAIL", "error" if not ok else "info")
-    except Exception as e:
+    except Exception:
         log(traceback.format_exc(), "error")
     log("Done")
 
